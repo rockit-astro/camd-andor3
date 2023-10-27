@@ -130,8 +130,8 @@ class SDKInterface:
                 try:
                     # Query temperature status
                     self._temperature = cam.SensorTemperature
-                    self._temperature_status = cam.TemperatureStatus
-                    self._temperature_locked = self._temperature_status == 'Stabilised'
+                    self._temperature_status = cam.TemperatureStatus.upper()
+                    self._temperature_locked = self._temperature_status == 'STABILISED'
                     self._cooler_enabled = cam.SensorCooling
                 except Exception as e:
                     print('Failed to query temperature with error', e)
@@ -153,7 +153,7 @@ class SDKInterface:
             reference_time = Time.now()
             self._cam.TimestampClockReset()
             tick_frequency = self._cam.TimestampClockFrequency
-            encoding = self._cam.PixelEncoding
+            encoding = self._cam.PixelEncoding.upper()
             exposure = self._cam.ExposureTime
             frameperiod = 1.0 / self._cam.FrameRate
             rowperiod = self._cam.RowReadTime
