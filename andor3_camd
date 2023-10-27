@@ -25,21 +25,15 @@
 # pylint: disable=bare-except
 
 import argparse
-from ctypes import c_bool, c_uint8
-import json
-from multiprocessing import Process, Queue, Value
+from ctypes import c_bool
+from multiprocessing import Process, Queue, Value, Pipe
 from multiprocessing.sharedctypes import RawArray
-import pathlib
+import queue
 import threading
-import time
-import numpy as np
-import pyAndorSDK3
 import Pyro4
-from astropy.time import Time
-import astropy.units as u
-from rockit.common import log, TryLock
+from rockit.common import TryLock
 from rockit.common.helpers import pyro_client_matches
-from rockit.camera.andor3 import Config, CommandStatus, CameraStatus, output_process
+from rockit.camera.andor3 import Config, CommandStatus, CameraStatus, output_process, sdk_process
 
 
 class CameraDaemon:
@@ -49,64 +43,13 @@ class CameraDaemon:
         self._status_condition = threading.Condition()
         self._command_lock = threading.Lock()
 
-        self._sdk = None
-        self._cam = None
-
-        self._camera_model = ''
-        self._camera_firmware_version = ''
-        self._sdk_version = ''
-
-        self._readout_width = 0
-        self._readout_height = 0
-
-        self._temperature = 0
-        self._temperature_status = None
-        self._temperature_locked = False
-        self._cooler_enabled = False
-        self._target_temperature = config.temperature_setpoint
-
-        # Crop output data to detector coordinates
-        self._window_region = [0, 0, 0, 0]
-        self._image_region = [0, 0, 0, 0]
-        self._binning = config.binning
-
-        self._exposure_time = 1
-
-        # Limit and number of frames acquired during the next sequence
-        # Set to 0 to run continuously
-        self._sequence_frame_limit = 0
-
-        # Number of frames acquired this sequence
-        self._sequence_frame_count = 0
-
-        # Time that the latest frame in the exposure was started
-        self._sequence_exposure_start_time = Time.now()
-
-        # Information for building the output filename
-        self._output_directory = pathlib.Path(config.output_path)
-        self._output_frame_prefix = config.output_prefix
-
-        # Persistent frame counters
-        self._counter_filename = config.expcount_path
-        try:
-            with open(self._counter_filename, 'r', encoding='utf-8') as infile:
-                data = json.load(infile)
-                self._exposure_count = data['exposure_count']
-                self._exposure_count_reference = data['exposure_reference']
-        except Exception:
-            self._exposure_count = 0
-            self._exposure_count_reference = Time.now().strftime('%Y-%m-%d')
-
-        # Thread that runs the exposure sequence
-        # Initialized by start() method
-        self._acquisition_thread = None
-
-        # Signal that the exposure sequence should be terminated
-        # at end of the current frame
-        self._stop_acquisition = False
-
-        # Thread for polling camera status
-        threading.Thread(target=self.__poll_camera_status, daemon=True).start()
+        # The Andor SDK initlializes camera state on process-start, and can crash the process with an
+        # uncatchable libusb exception if init is called at the wrong time.
+        # All the actual camera communication is handled through a separate process, which is created
+        # in the initialize method and terminated in the shutdown method. This ensures that all internal
+        # SDK state is reinitialized without having to restart the entire daemon.
+        self._sdk_process = self._sdk_pipe = None
+        self._sdk_lock = threading.Lock()
 
         # Subprocesses for processing acquired frames
         self._processing_queue = Queue()
@@ -121,194 +64,21 @@ class CameraDaemon:
                 config.header_card_capacity, config.output_path, config.log_name,
                 config.pipeline_daemon_name, config.pipeline_handover_timeout)).start()
 
-    @property
-    def is_acquiring(self):
-        return self._acquisition_thread is not None and self._acquisition_thread.is_alive()
-
-    def __poll_camera_status(self):
-        """Background thread that polls the camera status"""
-        while True:
-            # Take a copy to avoid race conditions with camera shutdown
-            cam = self._cam
-            if cam is not None:
-                try:
-                    # Query temperature status
-                    self._temperature = cam.SensorTemperature
-                    self._temperature_status = cam.TemperatureStatus
-                    self._temperature_locked = self._temperature_status == 'Stabilised'
-                    self._cooler_enabled = cam.SensorCooling
-                except Exception as e:
-                    print('Failed to query temperature with error', e)
-
-            time.sleep(self._config.temperature_query_delay)
-
-    def __run_exposure_sequence(self, quiet):
-        """Worker thread that acquires frames and their times.
-           Tagged frames are pushed to the acquisition queue
-           for further processing on another thread"""
-        processing = 0
-        try:
-            self._cam.ExposureTime = float(self._exposure_time)
-            self._cam.CycleMode = 'Continuous'
-            self._cam.TriggerMode = 'Internal'
-            self._cam.MetadataEnable = True
-            self._cam.MetadataTimestamp = True
-
-            reference_time = Time.now()
-            self._cam.TimestampClockReset()
-            tick_frequency = self._cam.TimestampClockFrequency
-            encoding = self._cam.PixelEncoding
-            exposure = self._cam.ExposureTime
-            frameperiod = 1.0 / self._cam.FrameRate
-            rowperiod = self._cam.RowReadTime
-
-            # Prepare the framebuffer offsets
-            if not self._processing_framebuffer_offsets.empty():
-                log.error(self._config.log_name, 'Frame buffer offsets queue is not empty!')
-                return
-
-            offset = 0
-            frame_size = self._cam.ImageSizeBytes
-            buffers = []
-            while offset + frame_size <= len(self._processing_framebuffer):
-                cdata = (c_uint8 * frame_size).from_buffer(self._processing_framebuffer, offset)
-                buffer = np.ctypeslib.as_array(cdata)
-                self._cam.queue(buffer, frame_size)
-                buffers.append(buffer)
-                offset += frame_size
-
-            self._cam.AcquisitionStart()
-            while not self._stop_acquisition and not self._processing_stop_signal.value:
-                while not self._processing_framebuffer_offsets.empty():
-                    processing -= 1
-                    offset = self._processing_framebuffer_offsets.get(block=False)
-                    self._cam.queue(buffers[offset], frame_size)
-
-                self._sequence_exposure_start_time = Time.now()
-                acq = self._cam.wait_buffer(int(self._exposure_time * 1000) + 5000)
-                read_end_time = Time.now()
-
-                buffer_index = -1
-                for i, buffer in enumerate(buffers):
-                    # pylint: disable=protected-access
-                    if acq._np_data is buffer:
-                        buffer_index = i
-                        break
-                    # pylint: enable=protected-access
-
-                processing += 1
-                self._processing_queue.put({
-                    'acquisition_buffer_index': buffer_index,
-                    'acquisition_frame_size': frame_size,
-                    # pylint: disable=protected-access
-                    'acquisition_config': self._cam._Camera__current_config,
-                    # pylint: enable=protected-access
-                    'reference_time': reference_time,
-                    'tick_frequency': tick_frequency,
-                    'requested_exposure': self._exposure_time,
-                    'exposure': exposure,
-                    'frameperiod': frameperiod,
-                    'rowperiod': rowperiod,
-                    'encoding': encoding,
-                    'read_end_time': read_end_time,
-                    'sdk_version': self._sdk_version,
-                    'firmware_version': self._camera_firmware_version,
-                    'image_region': self._image_region,
-                    'window_region': self._window_region,
-                    'binning': self._binning,
-                    'filter': self._config.filter,
-                    'exposure_count': self._exposure_count,
-                    'exposure_count_reference': self._exposure_count_reference,
-                    'cooler_temperature': self._temperature,
-                    'cooler_setpoint': float(self._config.temperature_setpoint),
-                    'cooler_status': self._temperature_status
-                })
-
-                self._exposure_count += 1
-                self._sequence_frame_count += 1
-
-                # Continue exposure sequence?
-                if 0 < self._sequence_frame_limit <= self._sequence_frame_count:
-                    self._stop_acquisition = True
-        finally:
-            self._cam.AcquisitionStop()
-            self._cam.flush()
-
-            # Save updated counts to disk
-            with open(self._counter_filename, 'w', encoding='utf-8') as outfile:
-                json.dump({
-                    'exposure_count': self._exposure_count,
-                    'exposure_reference': self._exposure_count_reference,
-                }, outfile)
-
-            # Wait for processing to complete
-            while processing > 0:
-                self._processing_framebuffer_offsets.get()
-                processing -= 1
-
-            if not quiet:
-                log.info(self._config.log_name, 'Exposure sequence complete')
-            self._stop_acquisition = False
-
-    @Pyro4.expose
-    def set_cooling(self, enabled, quiet=False):
-        """Set the camera cooler"""
-        if not pyro_client_matches(self._config.control_ips):
-            return CommandStatus.InvalidControlIP
-
-        with TryLock(self._command_lock) as success:
-            if not success:
-                return CommandStatus.Blocked
-
-            cam = self._cam
-            if cam is None:
+    def sdk_command(self, command, oneway=False, **kwargs):
+        """Send a command to the QHY process and return the response"""
+        with self._sdk_lock:
+            if self._sdk_process is None or not self._sdk_process.is_alive():
                 return CommandStatus.CameraNotInitialized
 
-            try:
-                cam.SensorCooling = enabled
-                if not quiet:
-                    log.info(self._config.log_name, 'Sensor cooling ' + ('enabled' if enabled else 'disabled'))
+            self._sdk_pipe.send({
+                'command': command,
+                'args': kwargs
+            })
 
+            if oneway:
                 return CommandStatus.Succeeded
-            except:
-                return CommandStatus.Failed
 
-
-    @Pyro4.expose
-    def report_status(self):
-        """Returns a dictionary containing the current camera state"""
-        cam = self._cam
-        if cam is None:
-            return {'state': CameraStatus.Disabled}
-
-        # Estimate the current frame progress based on the time delta
-        exposure_progress = 0
-        sequence_frame_count = self._sequence_frame_count
-        state = CameraStatus.Idle
-
-        if self.is_acquiring:
-            state = CameraStatus.Acquiring
-            if self._stop_acquisition:
-                state = CameraStatus.Aborting
-            else:
-                if self._sequence_exposure_start_time is not None:
-                    exposure_progress = (Time.now() - self._sequence_exposure_start_time).to(u.s).value
-                    if exposure_progress >= self._exposure_time:
-                        state = CameraStatus.Reading
-
-        return {
-            'state': state,
-            'cooler_enabled': self._cooler_enabled,
-            'cooler_temperature': self._temperature,
-            'cooler_setpoint': float(self._config.temperature_setpoint),
-            'temperature_locked': self._temperature_locked,  # used by opsd
-            'exposure_time': self._exposure_time,
-            'exposure_progress': exposure_progress,
-            'window': self._window_region,
-            'binning': self._binning,
-            'sequence_frame_limit': self._sequence_frame_limit,
-            'sequence_frame_count': sequence_frame_count,
-        }
+            return self._sdk_pipe.recv()
 
     @Pyro4.expose
     def initialize(self):
@@ -320,71 +90,115 @@ class CameraDaemon:
             if not success:
                 return CommandStatus.Blocked
 
-            if self._cam is not None:
-                return CommandStatus.CameraNotUninitialized
+            with self._sdk_lock:
+                if self._sdk_process is not None and self._sdk_process.is_alive():
+                    return CommandStatus.CameraNotUninitialized
 
-            print('initializing SDK')
-            try:
-                self._sdk = pyAndorSDK3.AndorSDK3()
-                found = False
-                for i in range(self._sdk.DeviceCount):
-                    try:
-                        cam = self._sdk.GetCamera(i)
-                    except pyAndorSDK3.ATCoreException:
-                        continue
-                    serial = cam.SerialNumber
-                    model = cam.CameraModel
+                self._sdk_pipe, camd_pipe = Pipe()
+                self._sdk_process = Process(target=sdk_process, args=(
+                    camd_pipe, self._config,
+                    self._processing_queue,
+                    self._processing_framebuffer, self._processing_framebuffer_offsets,
+                    self._processing_stop_signal
+                ), daemon=True)
 
-                    print(f'camera {i} is {model} ({serial})')
-                    if serial == self._config.camera_serial:
-                        found = True
-                        break
+                self._sdk_process.start()
+                return self._sdk_pipe.recv()
 
-                if not found:
-                    print(f'camera with serial {self._config.camera_serial} was not found')
-                    return CommandStatus.CameraNotFound
+    @Pyro4.expose
+    def shutdown(self):
+        """Disconnects from the camera driver"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
 
-                # Marana only supports temperatures of +15, -25, -40 deg C
-                # Fix temperature and only expose cooling on/off
-                cam.TemperatureControl = self._config.temperature_setpoint
-                cam.SensorCooling = True
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
 
-                cam.ExposureTime = self._exposure_time
+            if self._sdk_process is None:
+                return CommandStatus.CameraNotInitialized
 
-                self._camera_model = model
-                self._camera_firmware_version = cam.FirmwareVersion
-                self._sdk_version = self._sdk.SoftwareVersion
-                self._readout_width = cam.SensorWidth
-                self._readout_height = cam.SensorHeight
-                self._temperature = cam.SensorTemperature
-                self._temperature_status = cam.TemperatureStatus
-                self._temperature_locked = self._temperature_status == 'Stabilised'
-                self._cooler_enabled = cam.SensorCooling
-                self._cam = cam
+            self.sdk_command('shutdown', oneway=True)
 
-                # Regions are 0-indexed x1,x2,y1,2
-                # These are converted to 1-indexed when writing fits headers
-                self._window_region = [
-                    0,
-                    self._readout_width - 1,
-                    0,
-                    self._readout_height - 1
-                ]
+            with self._sdk_lock:
+                # The pyro timeout is usually set to 5s,
+                # so allow a little time to terminate the process if needed
+                self._sdk_process.join(4.5)
+                if self._sdk_process.exitcode is None:
+                    print('force-terminating SDK process')
+                    self._sdk_process.terminate()
 
-                self._image_region = [
-                    0,
-                    self._readout_width - 1,
-                    0,
-                    self._readout_height - 1
-                ]
+                    # Clean up dirty state
+                    while not self._processing_queue.empty():
+                        try:
+                            self._processing_queue.get(block=False)
+                        except queue.Empty:
+                            continue
 
-                log.info(self._config.log_name, 'Initialized camera')
-                return CommandStatus.Succeeded
-            except Exception as e:
-                self._cam = self._sdk = None
-                log.error(self._config.log_name, 'Failed to initialize camera')
-                print(e)
-                return CommandStatus.Failed
+                    while not self._processing_framebuffer_offsets.empty():
+                        try:
+                            self._processing_framebuffer_offsets.get(block=False)
+                        except queue.Empty:
+                            continue
+
+            return CommandStatus.Succeeded
+
+    @Pyro4.expose
+    def report_status(self):
+        """Returns a dictionary containing the current camera state"""
+        data = self.sdk_command('status')
+        if isinstance(data, dict):
+            return data
+
+        return {'state': CameraStatus.Disabled}
+
+    @Pyro4.expose
+    def set_cooling(self, enabled, quiet=False):
+        """Set the camera cooler"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            return self.sdk_command('cooling', stream=enabled, quiet=quiet)
+
+    @Pyro4.expose
+    def set_exposure(self, seconds, quiet=False):
+        """Set the exposure time in seconds"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            return self.sdk_command('exposure', exposure=seconds, quiet=quiet)
+
+    @Pyro4.expose
+    def set_window(self, window, quiet=False):
+        """Sets the sensor readout window in unbinned 1-indexed pixels"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            return self.sdk_command('window', window=window, quiet=quiet)
+
+    @Pyro4.expose
+    def set_binning(self, binning, quiet=False):
+        """Sets the sensor binning factor"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            return self.sdk_command('binning', binning=binning, quiet=quiet)
 
     @Pyro4.expose
     def configure(self, params, quiet=False):
@@ -408,165 +222,18 @@ class CameraDaemon:
             if not success:
                 return CommandStatus.Blocked
 
-            if self._cam is None:
-                return CommandStatus.CameraNotInitialized
+            cooling = params.get('cooling', True)
+            self.sdk_command('temperature', enabled=cooling, quiet=quiet)
 
-            if self.is_acquiring:
-                return CommandStatus.CameraNotIdle
+            exposure = params.get('exposure', 1)
+            self.sdk_command('exposure', exposure=exposure, quiet=quiet)
 
-            cooler = params.get('cooler', True)
-            try:
-                if cooler != self._cam.SensorCooling:
-                    self._cam.SensorCooling = cooler
-                    if not quiet:
-                        log.info(self._config.log_name, 'Cooler ' + ('enabled' if cooler else 'disabled'))
-            except:
-                return CommandStatus.Failed
+            window = params.get('window', None)
+            self.sdk_command('window', window=window, quiet=quiet)
 
-            exposure_time = params.get('exposure', 1)
-            if exposure_time != self._exposure_time:
-                self._exposure_time = exposure_time
-                if not quiet:
-                    log.info(self._config.log_name, f'Exposure time set to {self._exposure_time:.3f}s')
+            binning = params.get('bin', self._config.binning)
+            self.sdk_command('binning', binning=binning, quiet=quiet)
 
-            status = self._set_binning(params.get('bin', self._config.binning), quiet)
-            if status != CommandStatus.Succeeded:
-                return status
-
-            status = self._set_window(params.get('window', None), quiet)
-            if status != CommandStatus.Succeeded:
-                return status
-
-            return CommandStatus.Succeeded
-
-    @Pyro4.expose
-    def set_exposure(self, seconds, quiet=False):
-        """Set the exposure time in seconds"""
-        if not pyro_client_matches(self._config.control_ips):
-            return CommandStatus.InvalidControlIP
-
-        with TryLock(self._command_lock) as success:
-            if not success:
-                return CommandStatus.Blocked
-
-            if self._cam is None:
-                return CommandStatus.CameraNotInitialized
-
-            if self.is_acquiring:
-                return CommandStatus.CameraNotIdle
-
-            if not quiet and self._exposure_time != seconds:
-                log.info(self._config.log_name, f'Exposure time set to {seconds:.3f}s')
-
-            self._exposure_time = seconds
-
-            return CommandStatus.Succeeded
-
-    def _set_window(self, window, quiet):
-        if window is None:
-            self._window_region = [0, self._readout_width - 1, 0, self._readout_height - 1]
-
-        if len(window) != 4:
-            return CommandStatus.Failed
-        if window[0] < 1 or window[0] > self._readout_width:
-            return CommandStatus.WindowOutsideSensor
-        if window[1] < window[0] or window[1] > self._readout_width:
-            return CommandStatus.WindowOutsideSensor
-        if window[2] < 1 or window[2] > self._readout_height:
-            return CommandStatus.WindowOutsideSensor
-        if window[3] < window[2] or window[3] > self._readout_height:
-            return CommandStatus.WindowOutsideSensor
-
-        def format_window(window):
-            return f'[{window[0]}:{window[1]},{window[2]}:{window[3]}]'
-
-        previous = format_window(self._window_region)
-
-        # Convert from 1-indexed to 0-indexed
-        self._window_region = [x - 1 for x in window]
-
-        region = format_window(self._window_region)
-        if not quiet and previous != region:
-            log.info(self._config.log_name, f'Window set to {region}')
-
-        return CommandStatus.Succeeded
-
-    @Pyro4.expose
-    def set_window(self, window, quiet=False):
-        """Sets the sensor readout window in unbinned 1-indexed pixels"""
-        if not pyro_client_matches(self._config.control_ips):
-            return CommandStatus.InvalidControlIP
-
-        with TryLock(self._command_lock) as success:
-            if not success:
-                return CommandStatus.Blocked
-
-            if self._cam is None:
-                return CommandStatus.CameraNotInitialized
-
-            if self.is_acquiring:
-                return CommandStatus.CameraNotIdle
-
-            return self._set_window(window, quiet)
-
-    def _set_binning(self, binning, quiet):
-        if binning is None:
-            binning = self._config.binning
-
-        if not isinstance(binning, int) or binning < 1:
-            return CommandStatus.Failed
-
-        if not quiet and self._binning != binning:
-            log.info(self._config.log_name, f'Binning set to {binning}')
-
-        self._binning = binning
-        return CommandStatus.Succeeded
-
-    @Pyro4.expose
-    def set_binning(self, binning, quiet=False):
-        """Sets the sensor binning factor"""
-        if not pyro_client_matches(self._config.control_ips):
-            return CommandStatus.InvalidControlIP
-
-        with TryLock(self._command_lock) as success:
-            if not success:
-                return CommandStatus.Blocked
-
-            if self._cam is None:
-                return CommandStatus.CameraNotInitialized
-
-            if self.is_acquiring:
-                return CommandStatus.CameraNotIdle
-
-            self._set_binning(binning, quiet)
-            return CommandStatus.Succeeded
-
-    @Pyro4.expose
-    def shutdown(self):
-        """Disconnects from the camera driver"""
-        if not pyro_client_matches(self._config.control_ips):
-            return CommandStatus.InvalidControlIP
-
-        with TryLock(self._command_lock) as success:
-            if not success:
-                return CommandStatus.Blocked
-
-            if self._cam is None:
-                return CommandStatus.CameraNotInitialized
-
-            # Complete the current exposure
-            if self._acquisition_thread is not None:
-                self._cam.AcquisitionStop()
-                self._cam.flush()
-
-                print('shutdown: waiting for acquisition to complete')
-                self._stop_acquisition = True
-                self._acquisition_thread.join()
-
-            print('shutdown: disconnecting SDK')
-            self._cam = self._sdk = None
-
-            log.info(self._config.log_name, 'Shutdown camera')
             return CommandStatus.Succeeded
 
     @Pyro4.expose
@@ -579,32 +246,7 @@ class CameraDaemon:
             if not success:
                 return CommandStatus.Blocked
 
-            if self._cam is None:
-                return CommandStatus.CameraNotInitialized
-
-            if self.is_acquiring:
-                return CommandStatus.CameraNotIdle
-
-            self._sequence_frame_limit = count
-            self._sequence_frame_count = 0
-            self._stop_acquisition = False
-            self._processing_stop_signal.value = False
-
-            self._acquisition_thread = threading.Thread(
-                target=self.__run_exposure_sequence,
-                args=(quiet,), daemon=True)
-            self._acquisition_thread.start()
-
-            if not quiet:
-                count_msg = 'until stopped'
-                if count == 1:
-                    count_msg = '1 frame'
-                elif count > 1:
-                    count_msg = f'{count} frames'
-
-                log.info(self._config.log_name, f'Starting exposure sequence ({count_msg})')
-
-            return CommandStatus.Succeeded
+            return self.sdk_command('start', count=count, quiet=quiet)
 
     @Pyro4.expose
     def stop_sequence(self, quiet=False):
@@ -612,22 +254,7 @@ class CameraDaemon:
         if not pyro_client_matches(self._config.control_ips):
             return CommandStatus.InvalidControlIP
 
-        if self._cam is None:
-            return CommandStatus.CameraNotInitialized
-
-        if not self.is_acquiring or self._stop_acquisition:
-            return CommandStatus.CameraNotAcquiring
-
-        if not quiet:
-            log.info(self._config.log_name, 'Aborting exposure sequence')
-
-        self._sequence_frame_count = 0
-        self._stop_acquisition = True
-
-        self._cam.AcquisitionStop()
-        self._cam.flush()
-
-        return CommandStatus.Succeeded
+        return self.sdk_command('stop', quiet=quiet)
 
 
 if __name__ == '__main__':

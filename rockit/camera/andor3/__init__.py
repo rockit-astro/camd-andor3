@@ -20,3 +20,4 @@ from .client import run_client_command
 from .config import Config
 from .constants import CommandStatus, CameraStatus
 from .outputprocess import output_process
+from .sdkprocess import sdk_process
