@@ -162,7 +162,7 @@ class CameraDaemon:
             if not success:
                 return CommandStatus.Blocked
 
-            return self.sdk_command('cooling', stream=enabled, quiet=quiet)
+            return self.sdk_command('cooling', enabled=enabled, quiet=quiet)
 
     @Pyro4.expose
     def set_exposure(self, seconds, quiet=False):
