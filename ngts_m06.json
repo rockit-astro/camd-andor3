@@ -1,0 +1,19 @@
+{
+  "daemon": "ngts_m06_camera",
+  "pipeline_daemon": "ngts_m06_pipeline",
+  "pipeline_handover_timeout": 10,
+  "log_name": "camd_andor3@ngts_m06",
+  "control_machines": ["NGTSDASNUC"],
+  "client_commands_module": "rockit.camera.andor3",
+  "camera_serial": "CSC-00695",
+  "temperature_setpoint": "-25.0",
+  "temperature_query_delay": 10,
+  "worker_processes":  2,
+  "framebuffer_bytes": 41943040,
+  "header_card_capacity": 144,
+  "binning": 1,
+  "camera_id": "814",
+  "output_path": "/data/incoming",
+  "output_prefix": "814",
+  "expcount_path": "/data/814-counter.json"
+}
