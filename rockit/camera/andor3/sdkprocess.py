@@ -249,7 +249,7 @@ class SDKInterface:
     def set_cooling(self, enabled, quiet):
         """Set the camera cooler"""
         try:
-            self._cam.SensorCooling = enabled
+            self._cam.SensorCooling = self._cooler_enabled = enabled
             if not quiet:
                 log.info(self._config.log_name, 'Sensor cooling ' + ('enabled' if enabled else 'disabled'))
 
