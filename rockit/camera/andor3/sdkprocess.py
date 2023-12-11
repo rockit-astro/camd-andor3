@@ -144,7 +144,7 @@ class SDKInterface:
            for further processing on another thread"""
         processing = 0
         try:
-            self._cam.ExposureTime = float(self._exposure_time)
+            self._cam.ExposureTime = max(self._cam.min_ExposureTime, float(self._exposure_time))
             self._cam.CycleMode = 'Continuous'
             self._cam.TriggerMode = 'Internal'
             self._cam.MetadataEnable = True
