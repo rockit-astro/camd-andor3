@@ -223,7 +223,7 @@ class CameraDaemon:
                 return CommandStatus.Blocked
 
             cooling = params.get('cooling', True)
-            self.sdk_command('temperature', enabled=cooling, quiet=quiet)
+            self.sdk_command('cooling', enabled=cooling, quiet=quiet)
 
             exposure = params.get('exposure', 1)
             self.sdk_command('exposure', exposure=exposure, quiet=quiet)

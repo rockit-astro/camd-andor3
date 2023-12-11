@@ -365,30 +365,31 @@ class SDKInterface:
 
     def set_window(self, window, quiet=False):
         """Sets the sensor readout window in unbinned 1-indexed pixels"""
+        def format_window(window):
+            return f'[{window[0]}:{window[1]},{window[2]}:{window[3]}]'
+
         if self.is_acquiring:
             return CommandStatus.CameraNotIdle
+
+        previous = format_window(self._window_region)
 
         if window is None:
             self._window_region = [0, self._readout_width - 1, 0, self._readout_height - 1]
 
-        if len(window) != 4:
+        elif len(window) == 4:
+            if window[0] < 1 or window[0] > self._readout_width:
+                return CommandStatus.WindowOutsideSensor
+            if window[1] < window[0] or window[1] > self._readout_width:
+                return CommandStatus.WindowOutsideSensor
+            if window[2] < 1 or window[2] > self._readout_height:
+                return CommandStatus.WindowOutsideSensor
+            if window[3] < window[2] or window[3] > self._readout_height:
+                return CommandStatus.WindowOutsideSensor
+
+            # Convert from 1-indexed to 0-indexed
+            self._window_region = [x - 1 for x in window]
+        else:
             return CommandStatus.Failed
-        if window[0] < 1 or window[0] > self._readout_width:
-            return CommandStatus.WindowOutsideSensor
-        if window[1] < window[0] or window[1] > self._readout_width:
-            return CommandStatus.WindowOutsideSensor
-        if window[2] < 1 or window[2] > self._readout_height:
-            return CommandStatus.WindowOutsideSensor
-        if window[3] < window[2] or window[3] > self._readout_height:
-            return CommandStatus.WindowOutsideSensor
-
-        def format_window(window):
-            return f'[{window[0]}:{window[1]},{window[2]}:{window[3]}]'
-
-        previous = format_window(self._window_region)
-
-        # Convert from 1-indexed to 0-indexed
-        self._window_region = [x - 1 for x in window]
 
         region = format_window(self._window_region)
         if not quiet and previous != region:
