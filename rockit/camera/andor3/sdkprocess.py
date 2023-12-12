@@ -39,6 +39,40 @@ from rockit.common import log
 from .constants import CommandStatus, CameraStatus
 
 
+def enable_read_mode_hdr(cam):
+    cam.GainMode = 'High dynamic range (16-bit)'
+    cam.PixelEncoding = 'Mono16'
+
+
+def enable_read_mode_ffr(cam):
+    cam.GainMode = 'Fastest frame rate (12-bit)'
+    cam.PixelEncoding = 'Mono12'
+
+
+enable_read_mode_functions = {
+    'hdr': enable_read_mode_hdr,
+    'ffr': enable_read_mode_ffr
+}
+
+disable_read_mode_functions = {}
+
+read_mode_comments = {
+    'hdr': 'high dynamic range (16-bit)',
+    'ffr': 'fastest frame rate (12-bit)',
+}
+
+read_mode_encoding = {
+    'hdr': 'MONO16',
+    'ffr': 'MONO12',
+}
+
+try:
+    from .internal import enable_internal_read_modes
+    enable_internal_read_modes()
+except:
+    pass
+
+
 class SDKInterface:
     def __init__(self, config, processing_queue, processing_framebuffer, processing_framebuffer_offsets,
                  processing_stop_signal):
@@ -68,6 +102,7 @@ class SDKInterface:
         self._binning = config.binning
 
         self._exposure_time = 1
+        self._read_mode = None
 
         # Limit and number of frames acquired during the next sequence
         # Set to 0 to run continuously
@@ -153,7 +188,6 @@ class SDKInterface:
             reference_time = Time.now()
             self._cam.TimestampClockReset()
             tick_frequency = self._cam.TimestampClockFrequency
-            encoding = self._cam.PixelEncoding.upper()
             exposure = self._cam.ExposureTime
             frameperiod = 1.0 / self._cam.FrameRate
             rowperiod = self._cam.RowReadTime
@@ -205,7 +239,9 @@ class SDKInterface:
                     'exposure': exposure,
                     'frameperiod': frameperiod,
                     'rowperiod': rowperiod,
-                    'encoding': encoding,
+                    'read_mode': self._read_mode.upper(),
+                    'read_mode_comment': read_mode_comments[self._read_mode],
+                    'encoding': read_mode_encoding[self._read_mode],
                     'read_end_time': read_end_time,
                     'sdk_version': self._sdk_version,
                     'firmware_version': self._camera_firmware_version,
@@ -284,6 +320,7 @@ class SDKInterface:
             'exposure_progress': exposure_progress,
             'window': self._window_region,
             'binning': self._binning,
+            'read_mode': self._read_mode.upper(),
             'sequence_frame_limit': self._sequence_frame_limit,
             'sequence_frame_count': sequence_frame_count,
         }
@@ -316,6 +353,7 @@ class SDKInterface:
             cam.SensorCooling = True
             cam.ExposureTime = self._exposure_time
             cam.GainMode = 'High dynamic range (16-bit)'
+            self._read_mode = 'hdr'
 
             self._camera_model = model
             self._camera_firmware_version = cam.FirmwareVersion
@@ -414,6 +452,28 @@ class SDKInterface:
         self._binning = binning
         return CommandStatus.Succeeded
 
+    def set_readout_mode(self, mode, quiet=False):
+        """Sets the sensor binning factor"""
+        if self.is_acquiring:
+            return CommandStatus.CameraNotIdle
+
+        if mode == self._read_mode:
+            return CommandStatus.Succeeded
+
+        disable = disable_read_mode_functions.get(self._read_mode, None)
+        if disable:
+            disable(self._cam)
+
+        enable = enable_read_mode_functions.get(mode, None)
+        if enable:
+            enable(self._cam)
+            self._read_mode = mode
+            if not quiet:
+                log.info(self._config.log_name, f'Readout mode set to {mode}')
+            return CommandStatus.Succeeded
+
+        return CommandStatus.Failed
+
     def shutdown(self):
         """Disconnects from the camera driver"""
         # Complete the current exposure
@@ -499,6 +559,8 @@ def sdk_process(camd_pipe, config,
                     camd_pipe.send(cam.set_window(args['window'], args['quiet']))
                 elif command == 'binning':
                     camd_pipe.send(cam.set_binning(args['binning'], args['quiet']))
+                elif command == 'mode':
+                    camd_pipe.send(cam.set_readout_mode(args['mode'], args['quiet']))
                 elif command == 'start':
                     camd_pipe.send(cam.start_sequence(args['count'], args['quiet']))
                 elif command == 'stop':

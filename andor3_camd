@@ -201,6 +201,18 @@ class CameraDaemon:
             return self.sdk_command('binning', binning=binning, quiet=quiet)
 
     @Pyro4.expose
+    def set_mode(self, mode, quiet=False):
+        """Sets the sensor readout mode"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            return self.sdk_command('mode', mode=mode, quiet=quiet)
+
+    @Pyro4.expose
     def configure(self, params, quiet=False):
         """Set camera configuration to the requested state
            params should be a dictionary with the following keys:
