@@ -21,6 +21,8 @@ from rockit.common import TFmt
 from .config import Config
 from .constants import CommandStatus, CameraStatus
 
+from .sdkprocess import enable_read_mode_functions
+READOUT_MODES = list(enable_read_mode_functions.keys())
 
 def run_client_command(config_path, usage_prefix, args):
     """Prints the message associated with a status code and returns the code"""
@@ -33,6 +35,7 @@ def run_client_command(config_path, usage_prefix, args):
         'stop': stop,
         'window': set_window,
         'cooling': set_cooling,
+        'mode': set_mode,
         'init': initialize,
         'kill': shutdown
     }
@@ -45,6 +48,8 @@ def run_client_command(config_path, usage_prefix, args):
             print('continuous')
         elif 'cooling' in args[-2:]:
             print('enable disable')
+        elif 'mode' in args[-2:]:
+            print(' '.join(READOUT_MODES))
         elif len(args) < 3:
             print(' '.join(commands))
         return 0
@@ -106,6 +111,7 @@ def status(config, *_):
     print(f'   Output Window is {TFmt.Bold}[{w[0]}:{w[1]},{w[2]}:{w[3]}] px{TFmt.Clear}')
     print(f'   Binning is {TFmt.Bold}{data["binning"]} x {data["binning"]} px{TFmt.Clear}')
     print(f'   Exposure time is {TFmt.Bold}{data["exposure_time"]:.2f} s{TFmt.Clear}')
+    print(f'   Readout mode is {TFmt.Bold}{data["read_mode"]}{TFmt.Clear}')
     return 0
 
 
@@ -159,6 +165,15 @@ def set_window(config, usage_prefix, args):
     return -1
 
 
+def set_mode(config, usage_prefix, args):
+    """Set the camera readout mode"""
+    if len(args) == 1 and args[0] in READOUT_MODES:
+        with config.daemon.connect() as camd:
+            return camd.set_mode(args[0])
+    print(f'usage: {usage_prefix} mode ({"|".join(READOUT_MODES)})')
+    return -1
+
+
 def start(config, usage_prefix, args):
     """Starts an exposure sequence"""
     if len(args) == 1:
@@ -203,6 +218,8 @@ def print_usage(usage_prefix):
     print('   status       print a human-readable summary of the camera status')
     print('   exposure     set exposure time in seconds')
     print('   bin          set readout binning')
+    print('   cooling      enable/disable sensor cooling')
+    print('   mode         set the readout mode')
     print('   window       set readout window')
     print('   start        start an exposure sequence')
     print()

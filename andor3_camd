@@ -201,6 +201,18 @@ class CameraDaemon:
             return self.sdk_command('binning', binning=binning, quiet=quiet)
 
     @Pyro4.expose
+    def set_mode(self, mode, quiet=False):
+        """Sets the sensor readout mode"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            return self.sdk_command('mode', mode=mode, quiet=quiet)
+
+    @Pyro4.expose
     def configure(self, params, quiet=False):
         """Set camera configuration to the requested state
            params should be a dictionary with the following keys:
@@ -208,6 +220,7 @@ class CameraDaemon:
               exposure: Exposure time in seconds
               bin: Tuple of (bin-x, bin-y)
               window: Tuple of 1-indexed (x1, x2, y1, y2)
+              mode: Readout mode (hdr/ffr/<internal modes>)
            Any properties not specified in params will be reset to its default
 
            The params dictionary should be validated using the
@@ -233,6 +246,9 @@ class CameraDaemon:
 
             binning = params.get('bin', self._config.binning)
             self.sdk_command('binning', binning=binning, quiet=quiet)
+
+            mode = params.get('mode', 'hdr')
+            self.sdk_command('mode', mode=mode, quiet=quiet)
 
             return CommandStatus.Succeeded
 

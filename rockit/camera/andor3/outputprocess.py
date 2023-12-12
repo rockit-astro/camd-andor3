@@ -146,6 +146,7 @@ def output_process(process_queue, processing_framebuffer, processing_framebuffer
             ('FWVER', frame['firmware_version'], 'camera firmware version'),
             ('CAMID', camera_id, 'camera identifier'),
             ('CAMERA', camera_serial, 'camera model and serial number'),
+            ('READMODE', frame['read_mode'], frame['read_mode_comment']),
             ('ENCODING', frame['encoding'], 'pixel encoding'),
         ] + filter_headers + [
             ('CAM-TEMP', round(frame['cooler_temperature'], 2),
