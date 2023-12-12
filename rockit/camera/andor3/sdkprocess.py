@@ -314,8 +314,8 @@ class SDKInterface:
             # Fix temperature and only expose cooling on/off
             cam.TemperatureControl = self._config.temperature_setpoint
             cam.SensorCooling = True
-
             cam.ExposureTime = self._exposure_time
+            cam.GainMode = 'High dynamic range (16-bit)'
 
             self._camera_model = model
             self._camera_firmware_version = cam.FirmwareVersion
