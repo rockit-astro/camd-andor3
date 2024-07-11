@@ -17,7 +17,7 @@
 """client command input handlers"""
 
 import Pyro4
-from rockit.common import TFmt
+from rockit.common import print
 from .config import Config
 from .constants import CommandStatus, CameraStatus
 
@@ -80,7 +80,7 @@ def status(config, *_):
 
     state_desc = CameraStatus.label(data['state'], formatting=True)
     if data['state'] == CameraStatus.Acquiring:
-        state_desc += f' ({TFmt.Bold}{data["exposure_progress"]:.1f} / {data["exposure_time"]:.1f}s{TFmt.Clear})'
+        state_desc += f' ([b]{data["exposure_progress"]:.1f} / {data["exposure_time"]:.1f}s[/b])'
 
     # Camera is disabled
     print(f'   Camera is {state_desc}')
@@ -91,27 +91,27 @@ def status(config, *_):
         if data['sequence_frame_limit'] > 0:
             count = data['sequence_frame_count'] + 1
             limit = data['sequence_frame_limit']
-            print(f'   Acquiring frame {TFmt.Bold}{count} / {limit}{TFmt.Clear}')
+            print(f'   Acquiring frame [b]{count} / {limit}[/b]')
         else:
-            print(f'   Acquiring {TFmt.Bold}UNTIL STOPPED{TFmt.Clear}')
+            print(f'   Acquiring [b]UNTIL STOPPED[/b]')
 
-    temperature_fmt = TFmt.Bold + TFmt.Red
     if data['temperature_locked']:
-        temperature_status = TFmt.Bold + TFmt.Green + 'LOCKED' + TFmt.Clear
-        temperature_fmt = TFmt.Bold + TFmt.Green
+        temperature_status = '[b][green]LOCKED[/green][/b]'
+        temperature_color = 'green'
     elif not data['cooler_enabled']:
-        temperature_status = TFmt.Bold + TFmt.Red + 'COOLING DISABLED' + TFmt.Clear
-        temperature_fmt = TFmt.Bold
+        temperature_status = '[b][red]COOLING DISABLED[/red][/b]'
+        temperature_color = 'default'
     else:
-        temperature_status = f'{TFmt.Bold}LOCKING ON {data["cooler_setpoint"]:.0f}\u00B0C{TFmt.Clear}'
+        temperature_status = f'[b]LOCKING ON {data["cooler_setpoint"]:.0f}\u00B0C[/b]'
+        temperature_color = 'red'
 
-    print(f'   Temperature is {temperature_fmt}{data["cooler_temperature"]:.0f}\u00B0C{TFmt.Clear} ({temperature_status})')
+    print(f'   Temperature is [b][{temperature_color}]{data["cooler_temperature"]:.0f}\u00B0C[/{temperature_color}][/b] ({temperature_status})')
 
     w = [x + 1 for x in data['window']]
-    print(f'   Output Window is {TFmt.Bold}[{w[0]}:{w[1]},{w[2]}:{w[3]}] px{TFmt.Clear}')
-    print(f'   Binning is {TFmt.Bold}{data["binning"]} x {data["binning"]} px{TFmt.Clear}')
-    print(f'   Exposure time is {TFmt.Bold}{data["exposure_time"]:.2f} s{TFmt.Clear}')
-    print(f'   Readout mode is {TFmt.Bold}{data["read_mode"]}{TFmt.Clear}')
+    print(f'   Output Window is [b]\[{w[0]}:{w[1]},{w[2]}:{w[3]}] px[/b]')
+    print(f'   Binning is [b]{data["binning"]} x {data["binning"]} px[/b]')
+    print(f'   Exposure time is [b]{data["exposure_time"]:.2f} s[/b]')
+    print(f'   Readout mode is [b]{data["read_mode"]}[/b]')
     return 0
 
 
@@ -212,7 +212,7 @@ def shutdown(config, *_):
 
 def print_usage(usage_prefix):
     """Prints the utility help"""
-    print(f'usage: {usage_prefix} <command> [<args>]')
+    print(f'usage: {usage_prefix} <command> \\[<args>]')
     print()
     print('general commands:')
     print('   status       print a human-readable summary of the camera status')
