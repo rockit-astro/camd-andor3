@@ -131,7 +131,7 @@ def set_cooling(config, usage_prefix, args):
         enabled = args[0] == 'enable'
         with config.daemon.connect() as camd:
             return camd.set_cooling(enabled)
-    print(f'usage: {usage_prefix} cooling (enable|disable)')
+    print(f'usage: {usage_prefix} cooling <enable|disable>')
     return -1
 
 
@@ -161,7 +161,7 @@ def set_window(config, usage_prefix, args):
         with config.daemon.connect() as camd:
             return camd.set_window(window)
 
-    print(f'usage: {usage_prefix} window (<x1> <x2> <y1> <y2>|default)')
+    print(f'usage: {usage_prefix} window <x1 x2 y1 y2|default>')
     return -1
 
 
@@ -170,7 +170,7 @@ def set_mode(config, usage_prefix, args):
     if len(args) == 1 and args[0] in READOUT_MODES:
         with config.daemon.connect() as camd:
             return camd.set_mode(args[0])
-    print(f'usage: {usage_prefix} mode ({"|".join(READOUT_MODES)})')
+    print(f'usage: {usage_prefix} mode <{"|".join(READOUT_MODES)}>')
     return -1
 
 
@@ -187,7 +187,7 @@ def start(config, usage_prefix, args):
             with config.daemon.connect() as camd:
                 return camd.start_sequence(count)
 
-    print(f'usage: {usage_prefix} start (continuous|<count>)')
+    print(f'usage: {usage_prefix} start <continuous|(count)>')
     return -1
 
 
