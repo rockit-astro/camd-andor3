@@ -352,8 +352,8 @@ class SDKInterface:
             cam.TemperatureControl = self._config.temperature_setpoint
             cam.SensorCooling = True
             cam.ExposureTime = self._exposure_time
-            cam.GainMode = 'High dynamic range (16-bit)'
-            self._read_mode = 'hdr'
+            self._read_mode = list(enable_read_mode_functions.keys())[0]
+            enable_read_mode_functions[self._read_mode](cam)
 
             self._camera_model = model
             self._camera_firmware_version = cam.FirmwareVersion

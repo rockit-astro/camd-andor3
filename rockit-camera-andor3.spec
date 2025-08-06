@@ -18,6 +18,8 @@ mkdir -p %{buildroot}%{_udevrulesdir}
 %{__install} %{_sourcedir}/andor3_camd %{buildroot}%{_bindir}
 %{__install} %{_sourcedir}/andor3_camd@.service %{buildroot}%{_unitdir}
 %{__install} %{_sourcedir}/ngts_m06.json %{buildroot}%{_sysconfdir}/camd
+%{__install} %{_sourcedir}/halfmetre.json %{buildroot}%{_sysconfdir}/camd
+
 %package server
 Summary:  Andor CMOS camera server
 Group:    Unspecified
@@ -38,5 +40,14 @@ Group:   Unspecified
 %files data-ngts-m06
 %defattr(0644,root,root,-)
 %{_sysconfdir}/camd/ngts_m06.json
+
+%package data-halfmetre
+Summary: Andor camera data for Halfmetre test camera
+Group:   Unspecified
+%description data-halfmetre
+
+%files data-halfmetre
+%defattr(0644,root,root,-)
+%{_sysconfdir}/camd/halfmetre.json
 
 %changelog

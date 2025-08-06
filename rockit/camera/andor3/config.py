@@ -61,7 +61,7 @@ CONFIG_SCHEMA = {
         },
         'temperature_setpoint': {
             'type': 'string',
-            'enum': ['15.0', '-25.0', '-40.0']
+            'enum': ['15.0', '0.0', '-25.0', '-40.0']
         },
         'temperature_query_delay': {
             'type': 'number',

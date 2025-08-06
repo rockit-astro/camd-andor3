@@ -1,0 +1,19 @@
+{
+  "daemon": "halfmetre_cam",
+  "pipeline_daemon": "halfmetre_pipeline",
+  "pipeline_handover_timeout": 10,
+  "log_name": "andor3_camd@halfmetre",
+  "control_machines": ["HalfMetreTCS"],
+  "client_commands_module": "rockit.camera.andor3",
+  "camera_serial": "BETA-10",
+  "temperature_setpoint": "0.0",
+  "temperature_query_delay": 10,
+  "worker_processes":  2,
+  "framebuffer_bytes": 522626240,
+  "header_card_capacity": 144,
+  "binning": 1,
+  "camera_id": "HALFMETRE",
+  "output_path": "/data/incoming",
+  "output_prefix": "halfmetre",
+  "expcount_path": "/data/beta-counter.json"
+}
