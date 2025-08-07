@@ -99,13 +99,19 @@ def output_process(process_queue, processing_framebuffer, processing_framebuffer
             nrows, ncols = data.shape
             n_binned_cols = ncols//frame['binning']
             n_binned_rows = nrows//frame['binning']
-            binned_cols = np.zeros((nrows, n_binned_cols), dtype=np.uint32)
+            bdt = np.uint32
+
+            # Special case 12bit 2x2, which can fit in 16bit without losing precision
+            if frame['binning'] == 2 and frame['encoding'] == 'MONO12':
+                bdt = np.uint16
+
+            binned_cols = np.zeros((nrows, n_binned_cols), dtype=bdt)
 
             for i in range(nrows):
                 binned_cols[i] = np.sum(data[i][:n_binned_cols*frame['binning']]
                                         .reshape(n_binned_cols, frame['binning']), axis=1)
 
-            data = np.zeros((n_binned_rows, n_binned_cols), dtype=np.uint32)
+            data = np.zeros((n_binned_rows, n_binned_cols), dtype=bdt)
             for i in range(n_binned_cols):
                 data[:, i] = np.sum(binned_cols[:, i][:n_binned_rows*frame['binning']]
                                     .reshape(n_binned_rows, frame['binning']), axis=1)
