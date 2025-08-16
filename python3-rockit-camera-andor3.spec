@@ -1,6 +1,6 @@
 Name:           python3-rockit-camera-andor3
 Version:        %{_version}
-Release:        1
+Release:        1%{dist}
 License:        GPL3
 Summary:        Common code for the Andor camera daemon
 Url:            https://github.com/rockit-astro/camd-andor3
