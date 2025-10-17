@@ -263,8 +263,14 @@ class SDKInterface:
                 if 0 < self._sequence_frame_limit <= self._sequence_frame_count:
                     self._stop_acquisition = True
         finally:
-            self._cam.AcquisitionStop()
-            self._cam.flush()
+            try:
+                # Acquisition may already have been stopped by stop_sequence
+                # Calling this again would trigger a core dump!
+                if self._cam.CameraAcquiring:
+                    self._cam.AcquisitionStop()
+                self._cam.flush()
+            except Exception:
+                pass
 
             # Save updated counts to disk
             with open(self._counter_filename, 'w', encoding='utf-8') as outfile:
@@ -478,11 +484,12 @@ class SDKInterface:
         """Disconnects from the camera driver"""
         # Complete the current exposure
         if self._acquisition_thread is not None:
-            self._cam.AcquisitionStop()
-            self._cam.flush()
-
             print('shutdown: waiting for acquisition to complete')
             self._stop_acquisition = True
+
+            # Trigger an exception in the wait_buffer call to shortcut the buffer timeout
+            self._cam.AcquisitionStop()
+
             self._acquisition_thread.join()
 
         print('shutdown: disconnecting SDK')
@@ -528,8 +535,8 @@ class SDKInterface:
         self._sequence_frame_count = 0
         self._stop_acquisition = True
 
+        # Trigger an exception in the wait_buffer call to shortcut the buffer timeout
         self._cam.AcquisitionStop()
-        self._cam.flush()
 
         return CommandStatus.Succeeded
 
